@@ -1,31 +1,30 @@
 #include <Arduino.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
-
 #include "EspMQTTClient.h"
-
 #include <ArduinoJson.h>
 
 #include "Secrets.h"
 
-const uint16_t kIrLed = 4;
+const unsigned int IR_SEND_PIN = 4; // Pin to send IR commands on
+const unsigned int DEBUG_LED_PIN = 2; // Pin to an LED that indicates the current on/off state
 
-const long IR_COMMAND_ON = 0x7E7EA05FUL; // Returns to previous state, even if light was unplugged
-const long IR_COMMAND_OFF = 0x7E7E20DFUL; // Fades off the light
-const long IR_COMMAND_MIN_BRIGHTNESS = 0x7E7EB847UL; // If light is on, sets to max brightness (9)
-const long IR_COMMAND_MAX_BRIGHTNESS = 0x7E7E38C7UL; // If light is on, sets to min brightness (0)
-const long IR_COMMAND_DECREASE_BRIGHTNESS = 0x7E7ED827UL; // If light is on, reduces the brightness (-1)
-const long IR_COMMAND_INCREASE_BRIGHTNESS = 0x7E7E58A7UL; // If light is on, increases the brightness (+1)
-const long IR_COMMAND_MOTION_DISABLE_A = 0x7E7EB04FUL; // Disable motion detection. Related commands must also be called.
-const long IR_COMMAND_MOTION_DISABLE_B = 0x7E7E8877UL; // Disable motion detection. Related commands must also be called.
-const long IR_COMMAND_MOTION_DISABLE_C = 0x7E7EA857UL; // Disable motion detection. Related commands must also be called.
-const long MIN_IR_COMMAND_INTERVAL = 500; // Minnimum time between IR commands for them to be registered correctly.
+const unsigned long MIN_IR_COMMAND_INTERVAL = 500; // Minnimum time between IR commands for them to be registered correctly.
 
-IRsend irsend(kIrLed);
+const unsigned long IR_COMMAND_ON = 0x7E7EA05FUL; // Returns to previous state, even if light was unplugged
+const unsigned long IR_COMMAND_OFF = 0x7E7E20DFUL; // Fades off the light
+const unsigned long IR_COMMAND_MIN_BRIGHTNESS = 0x7E7EB847UL; // If light is on, sets to max brightness (9)
+const unsigned long IR_COMMAND_MAX_BRIGHTNESS = 0x7E7E38C7UL; // If light is on, sets to min brightness (0)
+const unsigned long IR_COMMAND_DECREASE_BRIGHTNESS = 0x7E7ED827UL; // If light is on, reduces the brightness (-1)
+const unsigned long IR_COMMAND_INCREASE_BRIGHTNESS = 0x7E7E58A7UL; // If light is on, increases the brightness (+1)
+const unsigned long IR_COMMAND_MOTION_DISABLE_A = 0x7E7EB04FUL; // Disable motion detection. Related commands must also be called.
+const unsigned long IR_COMMAND_MOTION_DISABLE_B = 0x7E7E8877UL; // Disable motion detection. Related commands must also be called.
+const unsigned long IR_COMMAND_MOTION_DISABLE_C = 0x7E7EA857UL; // Disable motion detection. Related commands must also be called.
 
-StaticJsonDocument<256> doc;
+// Contains parsed json data in a fixed-size buffer
+StaticJsonDocument<256> parsedJson;
 
-#define LED 2
+IRsend irsend(IR_SEND_PIN);
 
 EspMQTTClient client(
   WLAN_SSID,
@@ -37,7 +36,10 @@ EspMQTTClient client(
   1883
 );
 
+// on/off state of the light
 bool state = false;
+
+// 0-9 brightness level of the light
 int brightness = 0;
 
 // Increments on every new MQTT command, so we can cancel out early from in-progress command processing
@@ -53,9 +55,9 @@ void setup() {
   Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
   delay(2000);
 
-  pinMode(LED, OUTPUT);
+  pinMode(DEBUG_LED_PIN, OUTPUT);
 
-  // Enable debugging messages sent to serial output
+  // Enable MQTT debugging messages sent to serial output
   client.enableDebuggingMessages();
 
   // Disable motion detection
@@ -83,14 +85,14 @@ void loop()
   if (mqttNextCommandReady)
   {
     mqttNextCommandReady = false;
-    setState(mqttNextCommandPayload);
+    processMqttCommand(mqttNextCommandPayload);
   }
 }
 
 // This function is called once everything is connected (Wifi and MQTT)
 void onConnectionEstablished()
 {
-  MQTTAutoDiscovery();
+  setupHomeAssistantAutoDiscovery();
 
   client.subscribe("homeassistant/light/office-shop-light/set", [](const String & payload) {
     
@@ -105,7 +107,8 @@ void onConnectionEstablished()
   Serial.println("All good to go!");
 }
 
-void MQTTAutoDiscovery()
+// Sends MQTT commands to configure ourselves as a new light on Home Assistant
+void setupHomeAssistantAutoDiscovery()
 {
   client.publish("homeassistant/light/office-shop-light/config",
     "{"
@@ -122,22 +125,22 @@ void MQTTAutoDiscovery()
   publishState();
 }
 
-void setState(String json)
+void processMqttCommand(String json)
 {
-  int currentSeq = mqttCommandSequence;
-  
   Serial.println("Processing command " + String(mqttCommandSequence) + " json: " + json);
   
-  DeserializationError error = deserializeJson(doc, json);
+  DeserializationError error = deserializeJson(parsedJson, json);
   if (error) {
     Serial.print("deserializeJson() failed: ");
     Serial.println(error.f_str());
     return;
   }
 
-  String newState = doc["state"];
+  String newState = parsedJson["state"];
   if (newState == "ON") {
-    digitalWrite(LED, LOW);
+
+    // Turn on the LED state indicator
+    digitalWrite(DEBUG_LED_PIN, LOW);
 
     if (state == false)
     {
@@ -151,19 +154,17 @@ void setState(String json)
     }
 
     // State wont have brightness if its just a simple on/off command, so check for it
-    if (doc.containsKey("brightness"))
+    if (parsedJson.containsKey("brightness"))
     {
-      int requestedBrightness = doc["brightness"];
+      int requestedBrightness = parsedJson["brightness"];
       int scaledBrightness = (int)round(requestedBrightness / 28.333);
-
-      Serial.println("Current brightness: " + String(brightness) + ", target " + String(requestedBrightness) + " = " + String(scaledBrightness));
 
       if (scaledBrightness != brightness)
       {
         // Change brightness if its different enough from the current value
-        Serial.println("set to " + String(scaledBrightness));
         if (setBrightness(scaledBrightness))
         {
+          // Command interupted, so cancel early
           return;
         }
       }
@@ -172,7 +173,10 @@ void setState(String json)
   
   else if (newState == "OFF")
   {
-    digitalWrite(LED, HIGH);
+    
+    // Turn off the LED state indicator
+    digitalWrite(DEBUG_LED_PIN, HIGH);
+    
     irsend.sendNEC(IR_COMMAND_OFF);
     state = false;
     if (interuptableIrDelay())
@@ -181,8 +185,7 @@ void setState(String json)
     }
   }
 
-
-  Serial.println("Command " + String(currentSeq) +  " Finished setting brightness to " + String(json));
+  Serial.println("Finished setting brightness to " + String(json));
   publishState();
 }
 
@@ -213,6 +216,7 @@ bool setBrightness(int newBrightness)
     int delta;
     long command;
 
+    // Select the command and brightness offset required to increase/decrease the brightness
     if (newBrightness > brightness)
     {
       delta = 1;
@@ -222,10 +226,9 @@ bool setBrightness(int newBrightness)
       command = IR_COMMAND_DECREASE_BRIGHTNESS;
     }
 
-    Serial.println("Delta changing brightness! Delta " + String(delta) + ", command " + String(command));
+    // Iterate from the current brightness to the desired brightness
     for (int i = brightness; i != newBrightness; i += delta)
     {
-      Serial.println("i " + String(i));
       irsend.sendNEC(command);
       brightness += delta;
       if (interuptableIrDelay())
@@ -238,15 +241,20 @@ bool setBrightness(int newBrightness)
   return false;
 }
 
-// stack is way smaller than expectd, it should be using iteration instead of recursion
-// will need a way to poll for new commands without having them trigger processing until we unroll the stack
-
+/*
+ * This should be called after every IR command, if there's a possibility of sending more IR commands afterwards.
+ * 
+ * It takes care of the following:
+ * 
+ * 1. Delays for MIN_IR_COMMAND_INTERVAL (the minimum time between IR commands for the light to process them correctly)
+ * 2. Yields for WiFi and MQTT messages, to see if any new MQTT commands have been sent to us while waiting
+ * 3. If a new command has arrived, returns true. The calling method should cancel back up to loop() asap, so the new command can be processed.
+ */
 bool interuptableIrDelay()
 {
   
   int currentSeq = mqttCommandSequence;
   
-  Serial.println("Command " + String(currentSeq) + " starting delay");
   delay(MIN_IR_COMMAND_INTERVAL);
 
   // Update WiFi networking to allow new commands to arrive
