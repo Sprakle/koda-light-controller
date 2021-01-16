@@ -4,7 +4,7 @@
 #include "EspMQTTClient.h"
 #include <ArduinoJson.h>
 
-#include "Secrets.h"
+#include "Config.h"
 
 const unsigned int IR_SEND_PIN = 4; // Pin to send IR commands on
 const unsigned int DEBUG_LED_PIN = 2; // Pin to an LED that indicates the current on/off state
@@ -32,8 +32,8 @@ EspMQTTClient client(
   MQTT_SERVER,
   MQTT_USERNAME,
   MQTT_KEY,
-  "office-shop-lights",
-  1883
+  DEVICE_ID,
+  MQTT_SERVERPORT
 );
 
 // on/off state of the light
@@ -94,7 +94,7 @@ void onConnectionEstablished()
 {
   setupHomeAssistantAutoDiscovery();
 
-  client.subscribe("homeassistant/light/office-shop-light/set", [](const String & payload) {
+  client.subscribe("homeassistant/light/" + office-shop-light + "/set", [](const String & payload) {
     
     // Increment command sequence so in-progress commands know to cancel themselves
     mqttCommandSequence++;
@@ -110,11 +110,11 @@ void onConnectionEstablished()
 // Sends MQTT commands to configure ourselves as a new light on Home Assistant
 void setupHomeAssistantAutoDiscovery()
 {
-  client.publish("homeassistant/light/office-shop-light/config",
+  client.publish("homeassistant/light/" + office-shop-light + "/config",
     "{"
-      "\"~\": \"homeassistant/light/office-shop-light\","
-      "\"name\": \"Office Shop Light\","
-      "\"unique_id\": \"office_shop_light\","
+      "\"~\": \"homeassistant/light/" + office-shop-light + "\","
+      "\"name\": \"" + DEVICE_NAME + "\","
+      "\"unique_id\": \"" + DEVICE_ID + "\","
       "\"command_topic\": \"~/set\","
       "\"state_topic\": \"~/state\","
       "\"schema\": \"json\","
@@ -278,8 +278,8 @@ void publishState()
   
   if (state == true)
   {
-    client.publish("homeassistant/light/office-shop-light/state", "{\"state\": \"ON\", \"brightness\": " + scaledBrightness + "}");
+    client.publish("homeassistant/light/"+ DEVICE_ID + "/state", "{\"state\": \"ON\", \"brightness\": " + scaledBrightness + "}");
   } else {
-    client.publish("homeassistant/light/office-shop-light/state", "{\"state\": \"OFF\", \"brightness\": " + scaledBrightness + "}");
+    client.publish("homeassistant/light/"+ DEVICE_ID + "/state", "{\"state\": \"OFF\", \"brightness\": " + scaledBrightness + "}");
   }
 }
