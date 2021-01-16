@@ -6,5 +6,5 @@
 #define MQTT_USERNAME    "username"
 #define MQTT_KEY         "password"
 
-#define DEVICE_NAME      "office-shop-light"
-#define DEVICE_DISPLAY   "Office Shop Light"
+#define DEVICE_ID        "office-shop-light"
+#define DEVICE_NAME      "Office Shop Light"

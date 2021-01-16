@@ -94,7 +94,9 @@ void onConnectionEstablished()
 {
   setupHomeAssistantAutoDiscovery();
 
-  client.subscribe("homeassistant/light/" + office-shop-light + "/set", [](const String & payload) {
+  client.subscribe("homeassistant/light/"
+    DEVICE_ID
+    "/set", [](const String & payload) {
     
     // Increment command sequence so in-progress commands know to cancel themselves
     mqttCommandSequence++;
@@ -110,11 +112,20 @@ void onConnectionEstablished()
 // Sends MQTT commands to configure ourselves as a new light on Home Assistant
 void setupHomeAssistantAutoDiscovery()
 {
-  client.publish("homeassistant/light/" + office-shop-light + "/config",
+  // My appologies to the reader
+  client.publish("homeassistant/light/"
+      DEVICE_ID
+      "/config",
     "{"
-      "\"~\": \"homeassistant/light/" + office-shop-light + "\","
-      "\"name\": \"" + DEVICE_NAME + "\","
-      "\"unique_id\": \"" + DEVICE_ID + "\","
+      "\"~\": \"homeassistant/light/"
+        DEVICE_ID
+        "\","
+      "\"name\": \""
+        DEVICE_NAME
+        "\","
+      "\"unique_id\": \""
+        DEVICE_ID
+        "\","
       "\"command_topic\": \"~/set\","
       "\"state_topic\": \"~/state\","
       "\"schema\": \"json\","
@@ -278,8 +289,12 @@ void publishState()
   
   if (state == true)
   {
-    client.publish("homeassistant/light/"+ DEVICE_ID + "/state", "{\"state\": \"ON\", \"brightness\": " + scaledBrightness + "}");
+    client.publish("homeassistant/light/"
+      DEVICE_ID
+      "/state", "{\"state\": \"ON\", \"brightness\": " + scaledBrightness + "}");
   } else {
-    client.publish("homeassistant/light/"+ DEVICE_ID + "/state", "{\"state\": \"OFF\", \"brightness\": " + scaledBrightness + "}");
+    client.publish("homeassistant/light/"
+      DEVICE_ID
+      "/state", "{\"state\": \"OFF\", \"brightness\": " + scaledBrightness + "}");
   }
 }
