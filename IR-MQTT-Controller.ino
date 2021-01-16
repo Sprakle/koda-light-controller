@@ -40,6 +40,14 @@ EspMQTTClient client(
 bool state = false;
 int brightness = 0;
 
+// Increments on every new MQTT command, so we can cancel out early from in-progress command processing
+int mqttCommandSequence = 0;
+
+// Buffers the next incomming command from MQTT. It will be processed in the next loop().
+// We buffer instead of processing immediately, because processing from the MQTT callback would cause too much recursion.
+bool mqttNextCommandReady;
+String mqttNextCommandPayload;
+
 void setup() {
   irsend.begin();
   Serial.begin(115200, SERIAL_8N1, SERIAL_TX_ONLY);
@@ -71,16 +79,27 @@ void setup() {
 void loop()
 {
   client.loop();
+
+  if (mqttNextCommandReady)
+  {
+    mqttNextCommandReady = false;
+    setState(mqttNextCommandPayload);
+  }
 }
 
 // This function is called once everything is connected (Wifi and MQTT)
 void onConnectionEstablished()
 {
   MQTTAutoDiscovery();
-    
-  // Subscribe to "mytopic/test" and display received message to Serial
+
   client.subscribe("homeassistant/light/office-shop-light/set", [](const String & payload) {
-    setState(payload);
+    
+    // Increment command sequence so in-progress commands know to cancel themselves
+    mqttCommandSequence++;
+
+    // Buffer command so it can be processed from a fresh stack, instead of deep recursion
+    mqttNextCommandReady = true;
+    mqttNextCommandPayload = payload;
   });
   
   Serial.println("All good to go!");
@@ -105,11 +124,13 @@ void MQTTAutoDiscovery()
 
 void setState(String json)
 {
-  Serial.println(json);
+  int currentSeq = mqttCommandSequence;
+  
+  Serial.println("Processing command " + String(mqttCommandSequence) + " json: " + json);
   
   DeserializationError error = deserializeJson(doc, json);
   if (error) {
-    Serial.print(F("deserializeJson() failed: "));
+    Serial.print("deserializeJson() failed: ");
     Serial.println(error.f_str());
     return;
   }
@@ -123,7 +144,10 @@ void setState(String json)
       // Enable light if its currently off
       irsend.sendNEC(IR_COMMAND_ON);
       state = true;
-      delay(MIN_IR_COMMAND_INTERVAL);
+      if (interuptableIrDelay())
+      {
+        return;
+      }
     }
 
     // State wont have brightness if its just a simple on/off command, so check for it
@@ -138,7 +162,10 @@ void setState(String json)
       {
         // Change brightness if its different enough from the current value
         Serial.println("set to " + String(scaledBrightness));
-        setBrightness(scaledBrightness);
+        if (setBrightness(scaledBrightness))
+        {
+          return;
+        }
       }
     }
   }
@@ -148,22 +175,39 @@ void setState(String json)
     digitalWrite(LED, HIGH);
     irsend.sendNEC(IR_COMMAND_OFF);
     state = false;
-    delay(MIN_IR_COMMAND_INTERVAL);
+    if (interuptableIrDelay())
+    {
+      return;
+    }
   }
 
+
+  Serial.println("Command " + String(currentSeq) +  " Finished setting brightness to " + String(json));
   publishState();
 }
 
-void setBrightness(int newBrightness)
+bool setBrightness(int newBrightness)
 {
   if (newBrightness == 0)
   {
     // There are IR commands to immediately set brightness to min, so just use that
     irsend.sendNEC(IR_COMMAND_MIN_BRIGHTNESS);
+    brightness = 0;
+    if (interuptableIrDelay())
+    {
+      return true;
+    }
+    
   } else if (newBrightness == 9)
   {
     // There are IR commands to immediately set brightness to max, so just use that
     irsend.sendNEC(IR_COMMAND_MAX_BRIGHTNESS);
+    brightness = 9;
+    if (interuptableIrDelay())
+    {
+      return true;
+    }
+    
   } else {
     // Since this isn't a simple min/max set, we need to send several delta updates to reach the target
     int delta;
@@ -183,12 +227,41 @@ void setBrightness(int newBrightness)
     {
       Serial.println("i " + String(i));
       irsend.sendNEC(command);
-      delay(MIN_IR_COMMAND_INTERVAL);
+      brightness += delta;
+      if (interuptableIrDelay())
+      {
+        return true;
+      }
     }
   }
 
-  brightness = newBrightness;
+  return false;
+}
+
+// stack is way smaller than expectd, it should be using iteration instead of recursion
+// will need a way to poll for new commands without having them trigger processing until we unroll the stack
+
+bool interuptableIrDelay()
+{
+  
+  int currentSeq = mqttCommandSequence;
+  
+  Serial.println("Command " + String(currentSeq) + " starting delay");
   delay(MIN_IR_COMMAND_INTERVAL);
+
+  // Update WiFi networking to allow new commands to arrive
+  yield;
+
+  // Update MQTT processing to check for new commands
+  client.loop();
+
+  if (currentSeq != mqttCommandSequence)
+  {
+    Serial.println("Command " + String(currentSeq) + " interupted, cancelling");
+    return true;
+  }
+
+  return false;
 }
 
 void publishState()
